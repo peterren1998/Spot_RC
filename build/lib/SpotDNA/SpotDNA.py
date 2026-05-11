@@ -8,8 +8,7 @@ from utilities import dax, fitting, alignment
 import json
 
 conventional_image_prefix = 'Conv_zscan_' # then str(fov).zfill(3)+'.dax'
-# channels_for_FISH = ['750', '647', '561']
-channels_for_FISH = ['750', '647']
+channels_for_FISH = ['750', '647', '561']
 num_pixel_xy = 2048
 distance_zxy = [250, 108, 108]
 
@@ -112,7 +111,7 @@ def SpotDNA():
     ### load parameters for picking
     parameters = pickle.load(open(args.parameter_file, 'rb'))
 
-    # load DNA mask and calculate the expected number of spots
+    # load DNA mask and calculate the expected number of pots
     if os.path.exists(args.segment_file):
         dna_dapi_mask = np.load(args.segment_file)
         num_cells = len(np.unique(dna_dapi_mask)) - 1
@@ -227,8 +226,7 @@ def SpotDNA():
             seeds = fitting.get_seeds(getattr(dax_cls, f'im_{color}'), max_num_seeds=max_num_seed, 
                                       th_seed=parameters['seed_threshold'][color], 
                                       min_dynamic_seeds=min_num_seed,
-                                      segment=shifted_segment,
-                                      minimum_threshold=parameters['min_threshold'])
+                                      segment=shifted_segment)
             print(f"-----{len(seeds)} seeded with th={parameters['seed_threshold'][color]} in channel {color} for round {round_name}", flush=True)
             if len(seeds)>0:
                 ### fitting

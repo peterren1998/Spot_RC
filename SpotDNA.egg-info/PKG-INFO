@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: SpotDNA
+Version: 0.1
+Summary: DNA MERFISH spot finder
+Author: Cosmos Wang
+Author-email: cosmosyw93@gmail.com
+Dynamic: author
+Dynamic: author-email
+Dynamic: summary

@@ -81,7 +81,7 @@ class Dax_Processor():
             for ch in sel_channels:
                 if ch in illumination_dict.keys():
                     im = getattr(self, f'im_{ch}')
-                    corrected_im = correct_illumination(im, illumination_dict[ch], rescale=False)
+                    corrected_im = correct_illumination(im, illumination_dict[ch])
                     setattr(self, f'im_{ch}', corrected_im)
                     if self.verbose:
                         print(f'-----Finished illumination correction for channel {ch}')
@@ -95,7 +95,7 @@ class Dax_Processor():
                 ims = []
                 for ch in corrected_channels:
                     ims.append(getattr(self, f'im_{ch}'))
-                corrected_ims = correct_bleedthrough(ims, bleedthrough_correction_file, rescale=False)
+                corrected_ims = correct_bleedthrough(ims, bleedthrough_correction_file)
                 # release RAM
                 del ims
                 # update
