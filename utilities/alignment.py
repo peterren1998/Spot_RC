@@ -1,6 +1,7 @@
 ### adapted from ImageAnalysis3 - for alignment of images based on fiducial beads
 import numpy as np
 from skimage.registration import phase_cross_correlation
+from scipy.spatial import cKDTree as KDTree
 from scipy.spatial.distance import pdist, squareform, euclidean
 import pickle
 
@@ -89,6 +90,124 @@ def shift_spots(spots, drift):
     output_coords = np.array(spots).copy()
     output_coords[:, 1:4] = corr_coords
     return output_coords
+
+def _spot_coords(spots):
+    """Extract zxy coordinates from fitted spots or coordinate arrays."""
+    _spots = np.array(spots)
+    if _spots.size == 0:
+        return np.empty((0, 3), dtype=float)
+    if _spots.ndim != 2:
+        raise ValueError(f"spots should be a 2D array, got shape {np.shape(_spots)}")
+    if _spots.shape[1] == 11:
+        return _spots[:, 1:4].astype(float)
+    if _spots.shape[1] == 3:
+        return _spots.astype(float)
+    raise ValueError(f"spots should be Nx11 fitted spots or Nx3 coordinates, got shape {np.shape(_spots)}")
+
+
+def _as_3vector(value, default, name):
+    """Normalize scalar/list tuple parameters to zxy vectors."""
+    if value is None:
+        value = default
+    _value = np.array(value, dtype=float)
+    if _value.ndim == 0:
+        _value = np.repeat(float(_value), 3)
+    if _value.shape != (3,):
+        raise ValueError(f"{name} should be a scalar or 3 values in z,x,y order")
+    if np.any(_value <= 0):
+        raise ValueError(f"{name} values should be positive")
+    return _value
+
+
+def align_spots_by_displacement(
+    src_spots,
+    ref_spots,
+    search_radius=(4, 30, 30),
+    bin_size=(1, 2, 2),
+    residual_radius=(1, 3, 3),
+    min_matches=20,
+    min_inlier_fraction=0.02,
+    max_iterations=3,
+    max_candidate_pairs=200000,
+):
+    """Estimate translation from source spots to reference spots.
+
+    The returned drift has the same convention as align_image: add it to
+    source-round spot coordinates to put them into the reference coordinate
+    frame. Candidate matches are selected in an anisotropic zxy search window,
+    then the densest displacement cluster is refined by robust inliers.
+    """
+    src_coords = _spot_coords(src_spots)
+    ref_coords = _spot_coords(ref_spots)
+    search_radius = _as_3vector(search_radius, (4, 30, 30), "search_radius")
+    bin_size = _as_3vector(bin_size, (1, 2, 2), "bin_size")
+    residual_radius = _as_3vector(residual_radius, (1, 3, 3), "residual_radius")
+
+    qc = {
+        "num_source_spots": int(len(src_coords)),
+        "num_reference_spots": int(len(ref_coords)),
+        "num_candidate_pairs": 0,
+        "num_inliers": 0,
+        "inlier_fraction": 0.0,
+        "median_residual": np.nan,
+        "max_candidate_pairs_exceeded": False,
+    }
+
+    if len(src_coords) == 0 or len(ref_coords) == 0:
+        return np.zeros(3), "Failed signal alignment: no spots", qc
+
+    scaled_src = src_coords / search_radius
+    scaled_ref = ref_coords / search_radius
+    ref_tree = KDTree(scaled_ref)
+    candidate_displacements = []
+
+    for src_coord, scaled_coord in zip(src_coords, scaled_src):
+        ref_inds = ref_tree.query_ball_point(scaled_coord, r=1)
+        if len(ref_inds) == 0:
+            continue
+        for ref_ind in ref_inds:
+            candidate_displacements.append(ref_coords[ref_ind] - src_coord)
+            if len(candidate_displacements) >= max_candidate_pairs:
+                qc["max_candidate_pairs_exceeded"] = True
+                break
+        if qc["max_candidate_pairs_exceeded"]:
+            break
+
+    if len(candidate_displacements) == 0:
+        return np.zeros(3), "Failed signal alignment: no candidate matches", qc
+
+    displacements = np.array(candidate_displacements, dtype=float)
+    qc["num_candidate_pairs"] = int(len(displacements))
+
+    bins = np.floor(displacements / bin_size).astype(int)
+    unique_bins, counts = np.unique(bins, axis=0, return_counts=True)
+    mode_bin = unique_bins[np.argmax(counts)]
+    drift = np.median(displacements[np.all(bins == mode_bin, axis=1)], axis=0)
+
+    inlier_flags = np.zeros(len(displacements), dtype=bool)
+    for _ in range(int(max_iterations)):
+        residuals = np.linalg.norm((displacements - drift) / residual_radius, axis=1)
+        updated_flags = residuals <= 1
+        if np.array_equal(updated_flags, inlier_flags):
+            break
+        inlier_flags = updated_flags
+        if np.count_nonzero(inlier_flags) == 0:
+            break
+        drift = np.median(displacements[inlier_flags], axis=0)
+
+    residuals = np.linalg.norm((displacements - drift) / residual_radius, axis=1)
+    inlier_flags = residuals <= 1
+    num_inliers = int(np.count_nonzero(inlier_flags))
+    qc["num_inliers"] = num_inliers
+    qc["inlier_fraction"] = float(num_inliers / len(displacements))
+    if num_inliers > 0:
+        qc["median_residual"] = float(np.median(residuals[inlier_flags]))
+
+    if num_inliers < min_matches:
+        return drift, "Failed signal alignment: too few inliers", qc
+    if qc["inlier_fraction"] < min_inlier_fraction:
+        return drift, "Poor signal alignment", qc
+    return drift, "Optimal signal alignment", qc
 
 def align_image(
     src_im:np.ndarray, 

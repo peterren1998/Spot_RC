@@ -42,6 +42,17 @@ class Dax_Processor():
         raw_image = np.fromfile(self.dax_filename, dtype='uint16', count = -1)
         # calculate the number of frames
         num_frames = self.image_size[0] * len(self.channels)
+        pixels_per_frame = self.image_size[1] * self.image_size[2]
+        if raw_image.size != num_frames * pixels_per_frame:
+            detected_frames = raw_image.size / pixels_per_frame
+            detected_channels = detected_frames / self.image_size[0]
+            raise ValueError(
+                f"Cannot reshape {self.dax_filename}: found {raw_image.size} pixels "
+                f"({detected_frames:g} frames, {detected_channels:g} channels for "
+                f"{self.image_size[0]} z), but channels {self.channels} require "
+                f"{num_frames} frames ({len(self.channels)} channels). "
+                "Pass the full acquired DAX channel order."
+            )
         # reshape the image files
         raw_image = np.reshape(raw_image, [num_frames, self.image_size[1], self.image_size[2]])
         ### split image
