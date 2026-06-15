@@ -303,12 +303,14 @@ def _nearest_aligned_parent(round_name, parent_rounds, aligned_spot_pools):
 def load_color_info(color_info_file, round_name, channels_for_FISH=channels_for_FISH):
     color_dict = {}
     df_color = pd.read_csv(color_info_file)
-    df_round = df_color[df_color['Hyb']==round_name].copy()
-    df_round.reset_index(inplace=True, drop=True)
+    df_round = df_color[df_color['Hyb'] == round_name]
+    if df_round.empty:
+        return color_dict
+    row = df_round.iloc[0]
     for col in df_round.columns:
         if col in channels_for_FISH:
-            if not pd.isnull(df_round.loc[0, col]):
-                color_dict[col] = df_round.loc[0, col]
+            if not pd.isnull(row[col]):
+                color_dict[col] = row[col]
     return color_dict
 
 
@@ -333,7 +335,7 @@ def _correct_spot_chromatic(spots, color, correction_dict, microscope_dict):
 def _fit_spots_for_color(dax_cls, color, imageSize, parameters, max_num_seed,
                          min_num_seed, shifted_segment, correction_dict, microscope_dict,
                          round_name):
-    dynamic_niters = parameters.get('dynamic niters', 10)
+    dynamic_niters = int(parameters.get('dynamic_niters', 10))
     seeds = fitting.get_seeds(getattr(dax_cls, f'im_{color}'), max_num_seeds=max_num_seed,
                               th_seed=parameters['seed_threshold'][color],
                               min_dynamic_seeds=min_num_seed,
@@ -480,7 +482,30 @@ def SpotDNA():
         # load color usage
         color_usage = load_color_info(color_info_file, round_name, fish_channels)
         if len(color_usage.keys()) == 0:
-            if signal_drift and round_name != args.ref_round:
+            if signal_drift:
+                if round_name == args.ref_round:
+                    print(
+                        f'---No requested FISH channels in Color_Usage for reference round {round_name}; '
+                        'load/save DAPI only and omit this round from the signal drift chain.',
+                        flush=True,
+                    )
+                    load_channels = list(ref_dax_channels)
+                    _validate_required_channels(load_channels, [args.dapi_channel], 'Reference DAX')
+                    print(
+                        f"---Load reference DAPI image from file {image_file} with channels {','.join(load_channels)}",
+                        flush=True,
+                    )
+                    dax_cls = dax.Dax_Processor(image_file, load_channels, imageSize, correction_dict, microscope_dict)
+                    dax_cls.load_image()
+                    dax_cls.correct_image(sel_channels=[args.dapi_channel])
+                    _save_reference_dapi(output_file, getattr(dax_cls, f'im_{args.dapi_channel}'), args.overwrite)
+                    print(
+                        f'---Finish saving reference DAPI for round {round_name}; '
+                        'skip spot fitting and signal drift.\n',
+                        flush=True,
+                    )
+                    del dax_cls
+                    continue
                 print(
                     f'---No requested FISH channels in Color_Usage for round {round_name}; '
                     'skip spot fitting and signal drift for this round.',
@@ -591,8 +616,17 @@ def SpotDNA():
 
         raw_signal_pool = _pool_spot_coords(spots_by_channel, signal_drift_channels)
         if parent_round is None:
-            print(f'---No signal drift calculation for reference round', flush=True)
-            drift, drift_flag = np.zeros(3), 'Reference image'
+            if round_name == args.ref_round:
+                print(f'---No signal drift calculation for reference round', flush=True)
+                drift_flag = 'Reference image'
+            else:
+                print(
+                    f'---No aligned parent available for round {round_name}; '
+                    'start signal drift chain with zero drift',
+                    flush=True,
+                )
+                drift_flag = 'Signal drift chain start'
+            drift = np.zeros(3)
             drift_qc = {
                 'num_source_spots': int(len(raw_signal_pool)),
                 'num_reference_spots': int(len(raw_signal_pool)),
