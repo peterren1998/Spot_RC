@@ -16,6 +16,20 @@ default_signal_drift_channels = ['750', '647', '561']
 num_pixel_xy = 2048
 distance_zxy = [250, 108, 108]
 
+
+
+def _format_seed_stats(seed_stats):
+    return (
+        f"raw={seed_stats['raw_seed_candidates']}, "
+        f"edge_kept={seed_stats['after_edge_filter']}, "
+        f"hot_kept={seed_stats['after_hot_pixel_filter']}, "
+        f"max_trunc={seed_stats['truncated_by_max']}, "
+        f"final={seed_stats['final_seed_count']}, "
+        f"stopped={seed_stats['stopped_reason']}, "
+        f"threshold={seed_stats['threshold_used']}, "
+        f"iterations={seed_stats['iterations_used']}"
+    )
+
 def build_parser():
     parser = argparse.ArgumentParser(description='Spot finding in RC')
 
@@ -336,32 +350,55 @@ def _fit_spots_for_color(dax_cls, color, imageSize, parameters, max_num_seed,
                          min_num_seed, shifted_segment, correction_dict, microscope_dict,
                          round_name):
     dynamic_niters = int(parameters.get('dynamic_niters', 10))
-    seeds = fitting.get_seeds(getattr(dax_cls, f'im_{color}'), max_num_seeds=max_num_seed,
-                              th_seed=parameters['seed_threshold'][color],
-                              min_dynamic_seeds=min_num_seed,
-                              dynamic_niters=dynamic_niters,
-                              segment=shifted_segment,
-                              minimum_threshold=parameters['min_threshold'])
-    print(f"-----{len(seeds)} seeded with th={parameters['seed_threshold'][color]} in channel {color} for round {round_name}", flush=True)
+    seeds, seed_stats = fitting.get_seeds(
+        getattr(dax_cls, f'im_{color}'),
+        max_num_seeds=max_num_seed,
+        th_seed=parameters['seed_threshold'][color],
+        min_dynamic_seeds=min_num_seed,
+        dynamic_niters=dynamic_niters,
+        segment=shifted_segment,
+        minimum_threshold=parameters['min_threshold'],
+        return_stats=True,
+    )
+    print(
+        f"-----{len(seeds)} seeded with th={parameters['seed_threshold'][color]} in channel {color} for round {round_name} "
+        f"({_format_seed_stats(seed_stats)})",
+        flush=True,
+    )
     if len(seeds) == 0:
         return _empty_spots()
 
     fitter = fitting.iter_fit_seed_points(getattr(dax_cls, f'im_{color}'), seeds.T)
     fitter.firstfit()
     fitter.repeatfit()
-    spots = np.array(fitter.ps)
-    if spots.ndim != 2 or spots.shape[0] == 0:
+    fitted_spots = np.array(fitter.ps)
+    if fitted_spots.ndim != 2 or fitted_spots.shape[0] == 0:
+        print(
+            f"-----0 found in channel {color} in round {round_name} (fit=0, nan_removed=0, boundary_removed=0)",
+            flush=True,
+        )
         return _empty_spots()
 
-    spots = spots[np.sum(np.isnan(spots), axis=1) == 0] # remove NaNs
+    total_fitted = int(fitted_spots.shape[0])
+    keep_nan = np.sum(np.isnan(fitted_spots), axis=1) == 0
+    nan_removed = int(total_fitted - np.count_nonzero(keep_nan))
+    spots = fitted_spots[keep_nan]
     if spots.shape[0] == 0:
+        print(
+            f"-----0 found in channel {color} in round {round_name} (fit={total_fitted}, nan_removed={nan_removed}, boundary_removed=0)",
+            flush=True,
+        )
         return _empty_spots()
 
     # remove all boundary points
-    _kept_flags = (spots[:, 1:4] > np.zeros(3)).all(1) \
-        * (spots[:, 1:4] < np.array(imageSize)).all(1)
+    _kept_flags = (spots[:, 1:4] > np.zeros(3)).all(1)         * (spots[:, 1:4] < np.array(imageSize)).all(1)
+    boundary_removed = int(spots.shape[0] - np.count_nonzero(_kept_flags))
     spots = spots[np.where(_kept_flags)[0]]
-    print(f"-----{len(spots)} found in channel {color} in round {round_name}", flush=True)
+    print(
+        f"-----{len(spots)} found in channel {color} in round {round_name} "
+        f"(fit={total_fitted}, nan_removed={nan_removed}, boundary_removed={boundary_removed})",
+        flush=True,
+    )
     spots = _correct_spot_chromatic(spots, color, correction_dict, microscope_dict)
     return spots
 

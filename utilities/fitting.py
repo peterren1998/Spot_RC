@@ -26,7 +26,7 @@ def get_seeds(im, max_num_seeds=None, th_seed=1000,
               filt_size=3, min_edge_distance=2,
               use_dynamic_th=True, dynamic_niters=10, min_dynamic_seeds=100,
               minimum_threshold = 300, remove_hot_pixel=True, hot_pixel_th=5,
-              segment=None):
+              segment=None, return_stats=False):
     """Function to fully get seeding pixels given a image and thresholds.
     Inputs:
       im: image given, np.ndarray, 
@@ -45,10 +45,30 @@ def get_seeds(im, max_num_seeds=None, th_seed=1000,
     # check inputs
     if not isinstance(im, np.ndarray):
         raise TypeError(f"image given should be a numpy.ndarray, but {type(im)} is given.")
-    _local_edges = np.zeros(len(np.shape(im)))
+    coord_ndim = len(np.shape(im))
+    _local_edges = np.zeros(coord_ndim)
+    stats = {
+        'requested_max_num_seeds': None if max_num_seeds is None else int(max_num_seeds),
+        'seed_threshold': float(th_seed),
+        'dynamic_niters_requested': int(dynamic_niters) if use_dynamic_th else 1,
+        'min_dynamic_seeds': int(min_dynamic_seeds),
+        'minimum_threshold': float(minimum_threshold),
+        'raw_seed_candidates': 0,
+        'after_edge_filter': 0,
+        'after_hot_pixel_filter': 0,
+        'final_seed_count': 0,
+        'edge_removed': 0,
+        'hot_pixel_removed': 0,
+        'truncated_by_max': 0,
+        'iterations_used': 0,
+        'threshold_used': None,
+        'stopped_reason': 'empty_segment',
+    }
+    empty_coords = tuple(np.empty(0, dtype=int) for _ in range(coord_ndim))
     # return if there is no cell
-    if np.count_nonzero(segment)==0:
-        return []
+    if segment is None or np.count_nonzero(segment)==0:
+        empty = np.empty((0, coord_ndim), dtype=float)
+        return (empty, stats) if return_stats else []
     ## do seeding
     if not use_dynamic_th:
         dynamic_niters = 1 # setting only do seeding once
@@ -83,24 +103,39 @@ def get_seeds(im, max_num_seeds=None, th_seed=1000,
     del(_max_im, _min_im)
     del(_max_ft, _min_ft) 
 
+    _coords = empty_coords
+    _current_seed_th = float(th_seed)
+    _stopped_reason = 'dynamic_iterations_exhausted'
+
     # iteratively select seeds
     for _iter in range(dynamic_niters):
         # get seed coords
         _current_seed_th = th_seed * (1-_iter/dynamic_niters)
+        stats['iterations_used'] = _iter + 1
+        stats['threshold_used'] = float(_current_seed_th)
         # end if the threshold is too low
         if _current_seed_th<=minimum_threshold:
+            _stopped_reason = 'minimum_threshold'
             break
         
         # get seeds
         _coords = np.where(_local_maximum_mask & (_diff_ft >= _current_seed_th))
+        stats['raw_seed_candidates'] = int(len(_coords[0]))
         # remove edges
         if min_edge_distance > 0:
             _keep_flags = remove_edge_points(im, _coords, min_edge_distance)
             _coords = tuple(_cs[_keep_flags] for _cs in _coords)
+        stats['after_edge_filter'] = int(len(_coords[0]))
+        stats['edge_removed'] = int(stats['raw_seed_candidates'] - stats['after_edge_filter'])
         
         # if got enough seeds, proceed.
         if len(_coords[0]) >= min_dynamic_seeds:
+            _stopped_reason = 'min_dynamic_seeds'
             break
+    else:
+        _stopped_reason = 'dynamic_iterations_exhausted'
+    stats['stopped_reason'] = _stopped_reason
+
     # hot pixels
     if remove_hot_pixel:
         _,_x,_y = _coords
@@ -109,7 +144,13 @@ def get_seeds(im, max_num_seeds=None, th_seed=1000,
         _unique_xy_str, _cts = np.unique(_xy_str, return_counts=True)
         _keep_hot = np.array([_xy not in _unique_xy_str[_cts>=hot_pixel_th] 
                              for _xy in _xy_str],dtype=bool)
+        _before_hot = int(len(_coords[0]))
         _coords = tuple(_cs[_keep_hot] for _cs in _coords)
+        stats['after_hot_pixel_filter'] = int(len(_coords[0]))
+        stats['hot_pixel_removed'] = int(_before_hot - stats['after_hot_pixel_filter'])
+    else:
+        stats['after_hot_pixel_filter'] = int(len(_coords[0]))
+        stats['hot_pixel_removed'] = 0
     # get heights
     _hs = _diff_ft[_coords]
     _final_coords = np.array(_coords) + _local_edges[:, np.newaxis] # adjust to absolute coordinates
@@ -119,9 +160,14 @@ def get_seeds(im, max_num_seeds=None, th_seed=1000,
    
     # truncate with max_num_seeds
     if max_num_seeds is not None and max_num_seeds > 0 and max_num_seeds <= len(_final_coords):
+        stats['truncated_by_max'] = int(len(_final_coords) - int(max_num_seeds))
         _final_coords = _final_coords[:int(max_num_seeds)]
         print(f"--- {max_num_seeds} seeds are kept.")
-    
+    stats['final_seed_count'] = int(len(_final_coords))
+    if stats['after_edge_filter'] == 0 and stats['raw_seed_candidates'] == 0:
+        stats['after_edge_filter'] = 0
+    if return_stats:
+        return _final_coords, stats
     return _final_coords
 
 

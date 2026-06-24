@@ -12,6 +12,18 @@ channels_for_FISH = ['750', '647', '561']
 num_pixel_xy = 2048
 distance_zxy = [250, 108, 108]
 
+def _format_seed_stats(seed_stats):
+    return (
+        f"raw={seed_stats['raw_seed_candidates']}, "
+        f"edge_kept={seed_stats['after_edge_filter']}, "
+        f"hot_kept={seed_stats['after_hot_pixel_filter']}, "
+        f"max_trunc={seed_stats['truncated_by_max']}, "
+        f"final={seed_stats['final_seed_count']}, "
+        f"stopped={seed_stats['stopped_reason']}, "
+        f"threshold={seed_stats['threshold_used']}, "
+        f"iterations={seed_stats['iterations_used']}"
+    )
+
 def load_color_info(color_info_file, round_name, channels_for_FISH=channels_for_FISH):
     color_dict = {}
     df_color = pd.read_csv(color_info_file)
@@ -22,6 +34,7 @@ def load_color_info(color_info_file, round_name, channels_for_FISH=channels_for_
             if not pd.isnull(df_round.loc[0, col]):
                 color_dict[col] = df_round.loc[0, col]
     return color_dict
+
 
 def SpotDNA_mp(data_folders, analysis_folder, correction_file, parameter_file, fov, fiducial_channel='488', dapi_channel='405', num_z=50, ref_round='H0C1', overwrite=False):
     
@@ -155,10 +168,18 @@ def SpotDNA_mp(data_folders, analysis_folder, correction_file, parameter_file, f
             im = getattr(dax_cls, f'im_{color}')
             
             ### generate seed
-            seeds = fitting.get_seeds(im, max_num_seeds=parameters['max_num_seed'], 
-                                      th_seed=parameters['seed_threshold'][color], 
-                                      min_dynamic_seeds=parameters['min_num_seed'])
-            print(f"-----{len(seeds)} seeded with th={parameters['seed_threshold'][color]} in channel {color} for round {round_name}", flush=True)
+            seeds, seed_stats = fitting.get_seeds(
+                im,
+                max_num_seeds=parameters['max_num_seed'],
+                th_seed=parameters['seed_threshold'][color],
+                min_dynamic_seeds=parameters['min_num_seed'],
+                return_stats=True,
+            )
+            print(
+                f"-----{len(seeds)} seeded with th={parameters['seed_threshold'][color]} in channel {color} for round {round_name} "
+                f"({_format_seed_stats(seed_stats)})",
+                flush=True,
+            )
             ### fitting
             fitter = fitting.iter_fit_seed_points(im, seeds.T)    
             # fit
@@ -166,13 +187,32 @@ def SpotDNA_mp(data_folders, analysis_folder, correction_file, parameter_file, f
             # check
             fitter.repeatfit()
             # get spots
-            spots = np.array(fitter.ps)
-            spots = spots[np.sum(np.isnan(spots),axis=1)==0] # remove NaNs
+            fitted_spots = np.array(fitter.ps)
+            if fitted_spots.ndim != 2 or fitted_spots.shape[0] == 0:
+                print(
+                    f"-----0 found in channel {color} in round {round_name} (fit=0, nan_removed=0, boundary_removed=0)",
+                    flush=True,
+                )
+                continue
+            total_fitted = int(fitted_spots.shape[0])
+            keep_nan = np.sum(np.isnan(fitted_spots), axis=1) == 0
+            nan_removed = int(total_fitted - np.count_nonzero(keep_nan))
+            spots = fitted_spots[keep_nan]
+            if spots.shape[0] == 0:
+                print(
+                    f"-----0 found in channel {color} in round {round_name} (fit={total_fitted}, nan_removed={nan_removed}, boundary_removed=0)",
+                    flush=True,
+                )
+                continue
             # remove all boundary points
-            _kept_flags = (spots[:,1:4] > np.zeros(3)).all(1) \
-                * (spots[:, 1:4] < np.array(np.shape(im))).all(1)
+            _kept_flags = (spots[:,1:4] > np.zeros(3)).all(1)                 * (spots[:, 1:4] < np.array(np.shape(im))).all(1)
+            boundary_removed = int(spots.shape[0] - np.count_nonzero(_kept_flags))
             spots = spots[np.where(_kept_flags)[0]]
-            print(f"-----{len(spots)} found in channel {color} in round {round_name}", flush=True)
+            print(
+                f"-----{len(spots)} found in channel {color} in round {round_name} "
+                f"(fit={total_fitted}, nan_removed={nan_removed}, boundary_removed={boundary_removed})",
+                flush=True,
+            )
             
             ### shift the spots
             spots = alignment.shift_spots(spots, drift)
